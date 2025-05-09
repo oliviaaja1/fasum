@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:image_picker/image_picker.dart';
@@ -74,54 +73,148 @@ class _AddPostScreenState extends State<AddPostScreen> {
     if (_image == null) return;
     setState(() => _isGenerating = true);
     try {
-      final model = GenerativeModel(
-        model: 'gemini-1.5-pro',
-        apiKey: 'AIzaSyBNM8JkR4kmr_an_Q33zEvO54mB9TeH2qk',
-      );
       final imageBytes = await _image!.readAsBytes();
-      final content = Content.multi([
-        DataPart('image/jpeg', imageBytes),
-        TextPart(
-          'Berdasarkan foto ini, identifikasi satu kategori utama kerusakan fasilitas umum'
-          'dari daftar berikut : Jalan Rusak, Marka Pudar, Lampu Mati, Trotoar Rusak,'
-          'Rambu Rusak, Jembatan Rusak, Sampah Menumpuk, Saluran Tersumbat, Sungai Tercemar,'
-          'Sampah Sungai , Pohon Tumbang, Taman Rusak, Fasilitas Rusak, Pipa Bocor,'
-          'Vandalisme, Banjir, dan Lainnya.'
-          'Pilih kategori yang paling dominan atau paling mendesak untuk dilaporkan.'
-          'Buat deskripsi singkat untuk laporan perbaikan, dan tambahkan permohonan perbaikan.'
-          'Fokus pada kerusakan yang terlihat dan hindari spekulasi.\n\n'
-          'Format output yang diinginkan:\n'
-          'Kategori: [satu kategori yang dipilih]\n'
-          'Deskripsi: [deskripsi singkat]',
-        ),
-      ]);
-      final response = await model.generateContent([content]);
-      final aiText = response.text;
-      print("AI TEXT: $aiText");
-      if (aiText != null && aiText.isNotEmpty) {
-        final lines = aiText.trim().split('\n');
-        String? category;
-        String? description;
-
-        for (var line in lines) {
-          final lower = line.toLowerCase();
-          if (lower.startsWith('kategori:')) {
-            category = line.substring(9).trim();
-          } else if (lower.startsWith('deskripsi:')) {
-            description = line.substring(10).trim();
+      final base64Image = base64Encode(imageBytes);
+      const apiKey =
+          'AIzaSyBNM8JkR4kmr_an_Q33zEvO54mB9TeH2qk'; // ganti dengan API key kamu
+      const url =
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey';
+      final body = jsonEncode({
+        "contents": [
+          {
+            "parts": [
+              {
+                "inlineData": {"mimeType": "image/jpeg", "data": base64Image},
+              },
+              {
+                "text":
+                    "Berdasarkan foto ini, identifikasi satu kategori utama kerusakan fasilitas umum "
+                    "dari daftar berikut: Jalan Rusak, Marka Pudar, Lampu Mati, Trotoar Rusak, "
+                    "Rambu Rusak, Jembatan Rusak, Sampah Menumpuk, Saluran Tersumbat, Sungai Tercemar, "
+                    "Sampah Sungai, Pohon Tumbang, Taman Rusak, Fasilitas Rusak, Pipa Bocor, "
+                    "Vandalisme, Banjir, dan Lainnya. "
+                    "Pilih kategori yang paling dominan atau paling mendesak untuk dilaporkan. "
+                    "Buat deskripsi singkat untuk laporan perbaikan, dan tambahkan permohonan perbaikan. "
+                    "Fokus pada kerusakan yang terlihat dan hindari spekulasi.\n\n"
+                    "Format output yang diinginkan:\n"
+                    "Kategori: [satu kategori yang dipilih]\n"
+                    "Deskripsi: [deskripsi singkat]",
+              },
+            ],
+          },
+        ],
+      });
+      final headers = {'Content-Type': 'application/json'};
+      final response = await http.post(
+        Uri.parse(url),
+        headers: headers,
+        body: body,
+      );
+      if (response.statusCode == 200) {
+        final jsonResponse = jsonDecode(response.body);
+        final text =
+            jsonResponse['candidates'][0]['content']['parts'][0]['text'];
+        print("AI TEXT: $text");
+        if (text != null && text.isNotEmpty) {
+          final lines = text.trim().split('\n');
+          String? category;
+          String? description;
+          for (var line in lines) {
+            final lower = line.toLowerCase();
+            if (lower.startsWith('kategori:')) {
+              category = line.substring(9).trim();
+            } else if (lower.startsWith('deskripsi:')) {
+              description = line.substring(10).trim();
+            } else if (lower.startsWith('keterangan:')) {
+              description = line.substring(11).trim();
+            }
           }
+          description ??= text.trim();
+          setState(() {
+            _aiCategory = category ?? 'Tidak diketahui';
+            _aiDescription = description!;
+            _descriptionController.text = _aiDescription!;
+          });
         }
-        description ??= aiText.trim();
-        setState(() {
-          _aiCategory = category ?? 'Tidak diketahui';
-          _aiDescription = description!;
-          _descriptionController.text = _aiDescription!;
-        });
+      } else {
+        debugPrint('Request failed: ${response.body}');
       }
     } catch (e) {
       debugPrint('Failed to generate AI description: $e');
     } finally {
       if (mounted) setState(() => _isGenerating = false);
+    }
+  }
+
+  Future<void> _getLocation() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw Exception('Location Services are Disabled');
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.deniedForever ||
+          permission == LocationPermission.denied) {
+        throw Exception('Location Permission Are Denied');
+      }
+    }
+    try {
+      final Position = await Geolocator.getCurrentPosition(
+        locationSettings: LocationSettings(accuracy: LocationAccuracy.high),
+      ).timeout(const Duration(seconds: 10));
+      setState(() {
+        _latitude = Position.latitude;
+        _longitude = Position.longitude;
+      });
+    } catch (e) {
+      debugPrint('Gagal Mendapatkan Lokasi : $e');
+      setState(() {
+        _latitude = null;
+        _longitude = null;
+      });
+    }
+  }
+
+  Future<void> _submitPost() async {
+    if (_base64Image == null || _descriptionController.text.isEmpty) return;
+    setState(() => _isUploading = true);
+    final now = DateTime.now().toIso8601String();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      setState(() => _isUploading = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Pengguna Tidak Ditemukan')));
+      return;
+    }
+    try {
+      await _getLocation();
+      final userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final fullName = userDoc.data()?['fullName'] ?? 'Tanpa Nama';
+      await FirebaseFirestore.instance.collection('posts').add({
+        'image': _base64Image,
+        'description': _descriptionController.text,
+        'createdAt': now,
+        'latitude': _latitude,
+        'longitude': _longitude,
+        'fullName': fullName,
+        'userId': uid,
+      });
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      debugPrint('Upload Failed : $e');
+      if (!mounted) return;
+      setState(() => _isUploading = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Gagal Mengunggah Postingan')));
     }
   }
 
@@ -160,87 +253,11 @@ class _AddPostScreenState extends State<AddPostScreen> {
     );
   }
 
-  Future<void> _getLocation() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      throw Exception('Location services are disabled.');
-    }
-
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.deniedForever ||
-          permission == LocationPermission.denied) {
-        throw Exception('Location permissions are denied');
-      }
-
-      try {
-        final position = await Geolocator.getCurrentPosition(
-          locationSettings: LocationSettings(accuracy: LocationAccuracy.high),
-        ).timeout(const Duration(seconds: 10));
-        setState(() {
-          _latitude = position.latitude;
-          _longitude = position.longitude;
-        });
-      } catch (e) {
-        debugPrint('Gagal mendapatkan lokasi: $e');
-        setState(() {
-          _latitude = null;
-          _longitude = null;
-        });
-      }
-    }
-  }
-
-  Future<void> _SubmitPost() async {
-    if (_base64Image == null || _descriptionController.text.isEmpty) return;
-    setState(() => _isUploading = true);
-    final now = DateTime.now().toIso8601String();
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-
-    if (uid == null) {
-      setState(() => _isUploading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Pengguna tidak ditemukan.')));
-      return;
-    }
-    try {
-      await _getLocation();
-      // Ambil nama lengkap dari koleksi users
-      final userDoc =
-          await FirebaseFirestore.instance.collection('users').doc(uid).get();
-      final fullName = userDoc.data()?['fullName'] ?? 'Tanpa Nama';
-      await FirebaseFirestore.instance.collection('posts').add({
-        'image': _base64Image,
-        'description': _descriptionController.text,
-        'createdAt': now,
-        'latitude': _latitude,
-        'longitude': _longitude,
-        'fullName': fullName,
-        // 'aiCategory': _aiCategory,
-        'userId': uid, //optional
-      });
-      if (!mounted) return;
-      Navigator.pop(context);
-    } catch (e) {
-      debugPrint('Gagal menyimpan postingan: $e');
-      if (!mounted) return;
-      setState(() => _isUploading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Gagal mengunggah postingan.')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Add Post')),
       body: SingleChildScrollView(
-        padding: EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -284,11 +301,11 @@ class _AddPostScreenState extends State<AddPostScreen> {
             ),
             SizedBox(height: 24),
             _isUploading
-                ? CircularProgressIndicator()
+                ? const Center(child: CircularProgressIndicator())
                 : ElevatedButton.icon(
-                  onPressed: _SubmitPost,
+                  onPressed: _submitPost,
                   icon: Icon(Icons.upload),
-                  label: Text('Post'),
+                  label: Text('Posting'),
                 ),
           ],
         ),
